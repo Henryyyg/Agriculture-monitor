@@ -1,5 +1,6 @@
 import io
 import sqlite3
+import requests
 from pathlib import Path
 import pandas as pd
 import plotly.express as px
