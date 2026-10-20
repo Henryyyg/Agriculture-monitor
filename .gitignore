@@ -1,0 +1,5 @@
+agriculture.sqlite3
+*.sqlite3
+.env
+.streamlit/secrets.toml
+__pycache__/
