@@ -24,15 +24,89 @@ def connection():
 def load():
     return pd.read_sql_query("SELECT * FROM observations ORDER BY report_date",connection())
 
+
+# Official USDA monthly CSV links are discovered from the publication page,
+# rather than hard-coding release dates or file names.
+from html.parser import HTMLParser
+from urllib.parse import urljoin
+
+WASDE_ARCHIVE = "https://www.usda.gov/oce/commodity-markets/wasde/historical-wasde-report-data"
+
+class WasdeLinks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+        self.href = None
+        self.label = []
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.href = dict(attrs).get("href")
+            self.label = []
+    def handle_data(self, data):
+        if self.href is not None:
+            self.label.append(data)
+    def handle_endtag(self, tag):
+        if tag == "a" and self.href:
+            url = urljoin(WASDE_ARCHIVE, self.href)
+            if url.lower().split("?")[0].endswith(".csv") and "wasde" in url.lower():
+                self.links.append(((" ".join(self.label)).strip(), url))
+            self.href = None
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def discover_wasde_csvs():
+    response = requests.get(WASDE_ARCHIVE, timeout=35, headers={"User-Agent":"Newsquawk-Agricultural-Monitor/0.2"})
+    response.raise_for_status()
+    parser = WasdeLinks()
+    parser.feed(response.text)
+    return list(dict.fromkeys(parser.links))
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def download_wasde_csv(url):
+    if not url.startswith(("https://www.usda.gov/", "https://usda.gov/")):
+        raise ValueError("Only official USDA download URLs are allowed.")
+    response = requests.get(url, timeout=65)
+    response.raise_for_status()
+    if len(response.content) > 20_000_000:
+        raise ValueError("Download exceeds 20 MB safety limit.")
+    try:
+        return pd.read_csv(io.BytesIO(response.content), low_memory=False, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return pd.read_csv(io.BytesIO(response.content), low_memory=False, encoding="latin-1")
+
 page=st.sidebar.radio("Navigation",["Overview","WASDE Explorer","Historical Data","Data Connections"])
 data=load()
 if page=="Data Connections":
     st.subheader("Import historical WASDE CSV")
     st.markdown("Download the official historical CSV from [USDA](https://www.usda.gov/oce/commodity-markets/wasde/historical-wasde-report-data) and upload it below.")
-    uploaded=st.file_uploader("USDA CSV",type="csv")
+    st.markdown("### Automatic USDA download (no API key)")
+    st.caption("Downloads the original monthly WASDE CSV directly from USDA. The first import requires checking the field mapping; no manual file download is needed.")
+    raw = None
+    try:
+        links = discover_wasde_csvs()
+        if links:
+            chosen = st.selectbox("Official USDA report", range(len(links)), format_func=lambda i: f"{links[i][0]} — {links[i][1].split('/')[-1]}")
+            if st.button("Download selected USDA report", type="primary"):
+                st.session_state["wasde_download"] = download_wasde_csv(links[chosen][1])
+                st.session_state["wasde_download_url"] = links[chosen][1]
+                st.success("Downloaded from USDA. Check the mapping below, then import.")
+        else:
+            st.warning("USDA page did not expose any CSV links. Manual upload is still available.")
+    except Exception as exc:
+        st.warning(f"Automatic download unavailable: {exc}. You can still upload a CSV.")
+    if "wasde_download" in st.session_state:
+        raw = st.session_state["wasde_download"]
+        st.caption("Source: " + st.session_state.get("wasde_download_url", "USDA"))
+        if st.button("Clear downloaded report"):
+            st.session_state.pop("wasde_download", None)
+            st.rerun()
+    uploaded=st.file_uploader("Or upload a USDA CSV",type="csv")
     if uploaded is not None:
         try:
             raw=pd.read_csv(uploaded,low_memory=False)
+        except Exception as exc:
+            st.error(f"Unable to read CSV: {exc}")
+    if raw is not None:
+        try:
             st.dataframe(raw.head(8),use_container_width=True)
             names=list(raw.columns)
             def field(label,keywords):
