@@ -159,13 +159,62 @@ def show_grain_stocks():
                            f"usda_{crop.lower()}_grain_stocks.csv", "text/csv")
 
 
-st.sidebar.caption("USDA data connections")
-page = st.sidebar.radio("Navigation", ["Grain Stocks", "WASDE"])
-if page == "Grain Stocks":
-    show_grain_stocks()
+
+st.sidebar.caption("USDA Agricultural Monitor")
+start_year = st.sidebar.selectbox("Grain Stocks history from", [2020, 2015, 2010, 2023])
+if st.sidebar.button("Refresh USDA data"):
+    st.cache_data.clear()
+    st.rerun()
+st.subheader("Quarterly Grain Stocks — United States")
+st.caption("NASS Quick Stats · National stocks · Latest reported quarter, not a WASDE forecast")
+api_key = st.secrets.get("USDA_NASS_API_KEY", "")
+if not api_key:
+    st.error("Add USDA_NASS_API_KEY in Streamlit Cloud → Settings → Secrets to load quarterly Grain Stocks.")
 else:
-    st.subheader("WASDE — historical supply and demand")
-    st.info("WASDE original-release historical data is published by USDA as downloadable datasets, not through the NASS Quick Stats API. No manual upload is required here; an automated WASDE vintage-data connector is still being developed.")
-    st.markdown("[Official USDA WASDE historical data](https://www.usda.gov/oce/commodity-markets/wasde/historical-wasde-report-data)")
-    st.markdown("[USDA FAS PSD API — separate API key required](https://apps.fas.usda.gov/opendatawebV2/)")
-    st.caption("The PSD API supplies revised historical balances; original WASDE release vintages are a separate dataset. Do not treat them as interchangeable.")
+    cols = st.columns(3)
+    for col, crop in zip(cols, CROPS):
+        with col:
+            st.markdown(f"**{crop}**")
+            try:
+                with st.spinner(f"Loading {crop}..."):
+                    frame = nass_stocks(crop, start_year, api_key)
+                if frame.empty:
+                    st.warning("No matching NASS series returned")
+                    continue
+                # Keep the aggregate on/off-farm total; do not combine with its components.
+                if "short_desc" in frame:
+                    descriptions = frame["short_desc"].astype(str)
+                    total = frame[descriptions.str.contains("STOCKS, MEASURED IN ALL POSITIONS", case=False, na=False)]
+                    if total.empty:
+                        total = frame[~descriptions.str.contains("ON FARM|OFF FARM", case=False, na=False)]
+                    if not total.empty:
+                        frame = total
+                if "unit_desc" in frame and frame["unit_desc"].nunique() > 1:
+                    frame = frame[frame["unit_desc"] == frame["unit_desc"].mode().iloc[0]]
+                frame = frame.drop_duplicates(subset=["date", "short_desc"]).sort_values("date")
+                latest = frame.iloc[-1]
+                unit = latest.get("unit_desc", "as reported")
+                st.metric("Latest", f"{latest.value_numeric:,.0f}", help=f"{latest.date.date()} · {unit}")
+                st.caption(f"Quarter: {latest.date.date()} · {unit}")
+                st.plotly_chart(px.line(frame, x="date", y="value_numeric", markers=True,
+                    labels={"date":"Quarter","value_numeric":unit}), use_container_width=True, key=f"nass_{crop}")
+            except Exception as exc:
+                st.error(f"USDA request failed: {exc}")
+
+st.divider()
+st.subheader("Monthly WASDE Ending Stocks — United States")
+st.caption("Corn, Soybeans and Wheat · Monthly estimate vintages, grouped by marketing year")
+cols = st.columns(3)
+for col, crop in zip(cols, CROPS):
+    with col:
+        st.markdown(f"**{crop}**")
+        st.metric("Latest estimate", "Not connected")
+st.divider()
+st.subheader("Monthly WASDE Ending Stocks — Global")
+st.caption("World totals · Million metric tons · Monthly estimate vintages")
+cols = st.columns(3)
+for col, crop in zip(cols, CROPS):
+    with col:
+        st.markdown(f"**{crop}**")
+        st.metric("Latest estimate", "Not connected")
+st.info("WASDE historical data is publicly downloadable without a key, but its automatic parser is not yet implemented. These placeholders deliberately do not show invented or mismatched values.")
