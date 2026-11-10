@@ -80,6 +80,39 @@ def download_wasde_csv(url):
 NASS_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
 NASS_CROPS = {"Corn": "CORN", "Soybeans": "SOYBEANS", "Wheat": "WHEAT"}
 
+def get_nass_key():
+    # Strip accidental whitespace and quote characters copied from email.
+    return str(st.secrets.get("USDA_NASS_API_KEY", "")).strip().strip('\\\"').strip("'").strip()
+
+def test_nass_connection(api_key):
+    # Deliberately avoid echoing requests exceptions, URLs or response bodies:
+    # requests embeds query-string API keys in HTTP errors.
+    if not api_key:
+        return "Missing key in this app's Streamlit Secrets."
+    try:
+        response = requests.get(NASS_URL, params={
+            "key": api_key, "commodity_desc": "CORN",
+            "agg_level_desc": "NATIONAL", "year": "2023",
+            "format": "JSON"
+        }, timeout=25)
+    except requests.RequestException:
+        return "Unable to contact USDA. Check connectivity and try again."
+    if response.status_code == 401:
+        return "HTTP 401: USDA rejected this key. Check the NASS Quick Stats email, and verify the secret is saved to this deployment."
+    if response.status_code == 403:
+        return "HTTP 403: USDA denied access to this request."
+    if response.status_code != 200:
+        return f"USDA returned HTTP {response.status_code}. Authentication could not be confirmed."
+    try:
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("error"):
+            return "USDA accepted the request but returned a query error. The key may be valid."
+    except ValueError:
+        return "USDA returned HTTP 200, but not valid JSON."
+    return "Success: USDA accepted the API key (HTTP 200)."
+
+
+
 @st.cache_data(ttl=21600, show_spinner=False)
 def nass_stocks(crop, start_year, api_key):
     params = {
@@ -122,7 +155,7 @@ def nass_stocks(crop, start_year, api_key):
 def show_grain_stocks():
     st.subheader("USDA Quarterly Grain Stocks")
     st.caption("Official NASS Quick Stats · US national stocks · Survey data. Figures are historical observations, not live release headlines.")
-    api_key = st.secrets.get("USDA_NASS_API_KEY", "")
+    api_key = get_nass_key()
     if not api_key:
         st.error("Add USDA_NASS_API_KEY to Streamlit Community Cloud → App settings → Secrets.")
         return
@@ -169,6 +202,9 @@ start_year = st.sidebar.selectbox("Grain Stocks history from", [2020, 2015, 2010
 if st.sidebar.button("Refresh USDA data"):
     st.cache_data.clear()
     st.rerun()
+st.subheader("USDA API connection")
+if st.button("Test NASS API connection"):
+    st.info(test_nass_connection(get_nass_key()))
 st.subheader("Quarterly Grain Stocks — United States")
 st.caption("NASS Quick Stats · National stocks · Latest reported quarter, not a WASDE forecast")
 api_key = st.secrets.get("USDA_NASS_API_KEY", "")
