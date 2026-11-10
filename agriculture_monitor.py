@@ -66,7 +66,8 @@ def download_wasde_csv(url):
     if not url.startswith(("https://www.usda.gov/", "https://usda.gov/")):
         raise ValueError("Only official USDA download URLs are allowed.")
     response = requests.get(url, timeout=65)
-    response.raise_for_status()
+    if not response.ok:
+        raise ValueError(f"USDA download returned HTTP {response.status_code}.")
     if len(response.content) > 20_000_000:
         raise ValueError("Download exceeds 20 MB safety limit.")
     try:
@@ -91,7 +92,10 @@ def nass_stocks(crop, start_year, api_key):
         "format": "JSON",
     }
     response = requests.get(NASS_URL, params=params, timeout=75)
-    response.raise_for_status()
+    if response.status_code == 401:
+        raise ValueError("USDA rejected the NASS API key (HTTP 401). Check or regenerate the key in Streamlit Secrets.")
+    if not response.ok:
+        raise ValueError(f"USDA Quick Stats returned HTTP {response.status_code}.")
     payload = response.json()
     if "error" in payload:
         raise ValueError(str(payload["error"]))
